@@ -1,3 +1,4 @@
+import getWindowOf from './utils/getWindowOf.js';
 import isBrowser from './utils/isBrowser.js';
 import throttle from './utils/throttle.js';
 
@@ -16,18 +17,18 @@ const mutationObserverSupported = typeof MutationObserver !== 'undefined';
  */
 export default class ResizeObserverController {
     /**
-     * Indicates whether DOM listeners have been added.
+     * Indicates whether DOM listeners for a given observer have been added.
      *
-     * @private {boolean}
+     * @private {Map<MutationObserver, boolean>}
      */
-    connected_ = false;
+    connected_ = new Map();
 
     /**
      * Tells that controller has subscribed for Mutation Events.
      *
-     * @private {boolean}
+     * @private {Map<MutationObserver, boolean>}
      */
-    mutationEventsAdded_ = false;
+    mutationEventsAdded_ = new Map();
 
     /**
      * Keeps reference to the instance of MutationObserver.
@@ -64,16 +65,17 @@ export default class ResizeObserverController {
      * Adds observer to observers list.
      *
      * @param {ResizeObserverSPI} observer - Observer to be added.
+     * @param {HTMLElement} target - Element being observed.
      * @returns {void}
      */
-    addObserver(observer) {
+    addObserver(observer, target) {
         if (!~this.observers_.indexOf(observer)) {
             this.observers_.push(observer);
         }
 
         // Add listeners if they haven't been added yet.
-        if (!this.connected_) {
-            this.connect_();
+        if (!this.connected_.has(observer)) {
+            this.connect_(observer, target);
         }
     }
 
@@ -81,9 +83,10 @@ export default class ResizeObserverController {
      * Removes observer from observers list.
      *
      * @param {ResizeObserverSPI} observer - Observer to be removed.
+     * @param {HTMLElement} target - Element being observed.
      * @returns {void}
      */
-    removeObserver(observer) {
+    removeObserver(observer, target) {
         const observers = this.observers_;
         const index = observers.indexOf(observer);
 
@@ -93,8 +96,8 @@ export default class ResizeObserverController {
         }
 
         // Remove listeners if controller has no connected observers.
-        if (!observers.length && this.connected_) {
-            this.disconnect_();
+        if (this.connected_.has(observer)) {
+            this.disconnect_(observer, target);
         }
     }
 
@@ -142,21 +145,24 @@ export default class ResizeObserverController {
      * Initializes DOM listeners.
      *
      * @private
+     * @param {ResizeObserverSPI} observer - Observer to be connected.
+     * @param {HTMLElement} target - Element being observed.
      * @returns {void}
      */
-    connect_() {
+    connect_(observer, target) {
         // Do nothing if running in a non-browser environment or if listeners
         // have been already added.
-        if (!isBrowser || this.connected_) {
+        if (!isBrowser || this.connected_.has(observer)) {
             return;
         }
+
+        const targetWindow = getWindowOf(target);
 
         // Subscription to the "Transitionend" event is used as a workaround for
         // delayed transitions. This way it's possible to capture at least the
         // final state of an element.
-        document.addEventListener('transitionend', this.onTransitionEnd_);
-
-        window.addEventListener('resize', this.refresh);
+        targetWindow.document.addEventListener('transitionend', this.onTransitionEnd_);
+        targetWindow.addEventListener('resize', this.refresh);
 
         if (mutationObserverSupported) {
             this.mutationsObserver_ = new MutationObserver(this.refresh);
@@ -168,41 +174,45 @@ export default class ResizeObserverController {
                 subtree: true
             });
         } else {
-            document.addEventListener('DOMSubtreeModified', this.refresh);
+            targetWindow.document.addEventListener('DOMSubtreeModified', this.refresh);
 
-            this.mutationEventsAdded_ = true;
+            this.mutationEventsAdded_.set(observer, true);
         }
 
-        this.connected_ = true;
+        this.connected_.set(observer, true);
     }
 
     /**
      * Removes DOM listeners.
      *
      * @private
+     * @param {ResizeObserverSPI} observer - Observer to be disconnected.
+     * @param {HTMLElement} target - Element being observed.
      * @returns {void}
      */
-    disconnect_() {
-        // Do nothing if running in a non-browser environment or if listeners
-        // have been already removed.
-        if (!isBrowser || !this.connected_) {
+    disconnect_(observer, target) {
+        // Do nothing if running in a non-browser environment
+        if (!isBrowser) {
             return;
         }
 
-        document.removeEventListener('transitionend', this.onTransitionEnd_);
-        window.removeEventListener('resize', this.refresh);
+        const targetWindow = getWindowOf(target);
+
+        targetWindow.document.removeEventListener('transitionend', this.onTransitionEnd_);
+        targetWindow.window.removeEventListener('resize', this.refresh);
 
         if (this.mutationsObserver_) {
             this.mutationsObserver_.disconnect();
         }
 
-        if (this.mutationEventsAdded_) {
-            document.removeEventListener('DOMSubtreeModified', this.refresh);
+        if (this.mutationEventsAdded_.has(observer)) {
+            targetWindow.document.removeEventListener('DOMSubtreeModified', this.refresh);
         }
 
         this.mutationsObserver_ = null;
-        this.mutationEventsAdded_ = false;
-        this.connected_ = false;
+
+        this.mutationEventsAdded_.delete(observer);
+        this.connected_.delete(observer);
     }
 
     /**

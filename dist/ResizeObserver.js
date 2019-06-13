@@ -110,11 +110,6 @@
         }());
     })();
 
-    /**
-     * Detects whether window and document objects are available in current environment.
-     */
-    var isBrowser = typeof window !== 'undefined' && typeof document !== 'undefined' && window.document === document;
-
     // Returns global object of a current environment.
     var global$1 = (function () {
         if (typeof global !== 'undefined' && global.Math === Math) {
@@ -129,6 +124,27 @@
         // eslint-disable-next-line no-new-func
         return Function('return this')();
     })();
+
+    /**
+     * Returns the global object associated with provided element.
+     *
+     * @param {Object} target
+     * @returns {Object}
+     */
+    var getWindowOf = (function (target) {
+        // Assume that the element is an instance of Node, which means that it
+        // has the "ownerDocument" property from which we can retrieve a
+        // corresponding global object.
+        var ownerGlobal = target && target.ownerDocument && target.ownerDocument.defaultView;
+        // Return the local global object if it's not possible extract one from
+        // provided element.
+        return ownerGlobal || global$1;
+    });
+
+    /**
+     * Detects whether window and document objects are available in current environment.
+     */
+    var isBrowser = typeof window !== 'undefined' && typeof document !== 'undefined' && window.document === document;
 
     /**
      * A shim for the requestAnimationFrame which falls back to the setTimeout if
@@ -229,17 +245,17 @@
          */
         function ResizeObserverController() {
             /**
-             * Indicates whether DOM listeners have been added.
+             * Indicates whether DOM listeners for a given observer have been added.
              *
-             * @private {boolean}
+             * @private {Map<MutationObserver, boolean>}
              */
-            this.connected_ = false;
+            this.connected_ = new Map();
             /**
              * Tells that controller has subscribed for Mutation Events.
              *
-             * @private {boolean}
+             * @private {Map<MutationObserver, boolean>}
              */
-            this.mutationEventsAdded_ = false;
+            this.mutationEventsAdded_ = new Map();
             /**
              * Keeps reference to the instance of MutationObserver.
              *
@@ -259,24 +275,26 @@
          * Adds observer to observers list.
          *
          * @param {ResizeObserverSPI} observer - Observer to be added.
+         * @param {HTMLElement} target - Element being observed.
          * @returns {void}
          */
-        ResizeObserverController.prototype.addObserver = function (observer) {
+        ResizeObserverController.prototype.addObserver = function (observer, target) {
             if (!~this.observers_.indexOf(observer)) {
                 this.observers_.push(observer);
             }
             // Add listeners if they haven't been added yet.
-            if (!this.connected_) {
-                this.connect_();
+            if (!this.connected_.has(observer)) {
+                this.connect_(observer, target);
             }
         };
         /**
          * Removes observer from observers list.
          *
          * @param {ResizeObserverSPI} observer - Observer to be removed.
+         * @param {HTMLElement} target - Element being observed.
          * @returns {void}
          */
-        ResizeObserverController.prototype.removeObserver = function (observer) {
+        ResizeObserverController.prototype.removeObserver = function (observer, target) {
             var observers = this.observers_;
             var index = observers.indexOf(observer);
             // Remove observer if it's present in registry.
@@ -284,8 +302,8 @@
                 observers.splice(index, 1);
             }
             // Remove listeners if controller has no connected observers.
-            if (!observers.length && this.connected_) {
-                this.disconnect_();
+            if (this.connected_.has(observer)) {
+                this.disconnect_(observer, target);
             }
         };
         /**
@@ -327,19 +345,22 @@
          * Initializes DOM listeners.
          *
          * @private
+         * @param {ResizeObserverSPI} observer - Observer to be connected.
+         * @param {HTMLElement} target - Element being observed.
          * @returns {void}
          */
-        ResizeObserverController.prototype.connect_ = function () {
+        ResizeObserverController.prototype.connect_ = function (observer, target) {
             // Do nothing if running in a non-browser environment or if listeners
             // have been already added.
-            if (!isBrowser || this.connected_) {
+            if (!isBrowser || this.connected_.has(observer)) {
                 return;
             }
+            var targetWindow = getWindowOf(target);
             // Subscription to the "Transitionend" event is used as a workaround for
             // delayed transitions. This way it's possible to capture at least the
             // final state of an element.
-            document.addEventListener('transitionend', this.onTransitionEnd_);
-            window.addEventListener('resize', this.refresh);
+            targetWindow.document.addEventListener('transitionend', this.onTransitionEnd_);
+            targetWindow.addEventListener('resize', this.refresh);
             if (mutationObserverSupported) {
                 this.mutationsObserver_ = new MutationObserver(this.refresh);
                 this.mutationsObserver_.observe(document, {
@@ -350,34 +371,36 @@
                 });
             }
             else {
-                document.addEventListener('DOMSubtreeModified', this.refresh);
-                this.mutationEventsAdded_ = true;
+                targetWindow.document.addEventListener('DOMSubtreeModified', this.refresh);
+                this.mutationEventsAdded_.set(observer, true);
             }
-            this.connected_ = true;
+            this.connected_.set(observer, true);
         };
         /**
          * Removes DOM listeners.
          *
          * @private
+         * @param {ResizeObserverSPI} observer - Observer to be disconnected.
+         * @param {HTMLElement} target - Element being observed.
          * @returns {void}
          */
-        ResizeObserverController.prototype.disconnect_ = function () {
-            // Do nothing if running in a non-browser environment or if listeners
-            // have been already removed.
-            if (!isBrowser || !this.connected_) {
+        ResizeObserverController.prototype.disconnect_ = function (observer, target) {
+            // Do nothing if running in a non-browser environment
+            if (!isBrowser) {
                 return;
             }
-            document.removeEventListener('transitionend', this.onTransitionEnd_);
-            window.removeEventListener('resize', this.refresh);
+            var targetWindow = getWindowOf(target);
+            targetWindow.document.removeEventListener('transitionend', this.onTransitionEnd_);
+            targetWindow.window.removeEventListener('resize', this.refresh);
             if (this.mutationsObserver_) {
                 this.mutationsObserver_.disconnect();
             }
-            if (this.mutationEventsAdded_) {
-                document.removeEventListener('DOMSubtreeModified', this.refresh);
+            if (this.mutationEventsAdded_.has(observer)) {
+                targetWindow.document.removeEventListener('DOMSubtreeModified', this.refresh);
             }
             this.mutationsObserver_ = null;
-            this.mutationEventsAdded_ = false;
-            this.connected_ = false;
+            this.mutationEventsAdded_.delete(observer);
+            this.connected_.delete(observer);
         };
         /**
          * "Transitionend" event handler.
@@ -434,22 +457,6 @@
             });
         }
         return target;
-    });
-
-    /**
-     * Returns the global object associated with provided element.
-     *
-     * @param {Object} target
-     * @returns {Object}
-     */
-    var getWindowOf = (function (target) {
-        // Assume that the element is an instance of Node, which means that it
-        // has the "ownerDocument" property from which we can retrieve a
-        // corresponding global object.
-        var ownerGlobal = target && target.ownerDocument && target.ownerDocument.defaultView;
-        // Return the local global object if it's not possible extract one from
-        // provided element.
-        return ownerGlobal || global$1;
     });
 
     // Placeholder of an empty content rectangle.
@@ -789,7 +796,7 @@
                 return;
             }
             observations.set(target, new ResizeObservation(target));
-            this.controller_.addObserver(this);
+            this.controller_.addObserver(this, target);
             // Force the update of observations.
             this.controller_.refresh();
         };
@@ -817,7 +824,7 @@
             }
             observations.delete(target);
             if (!observations.size) {
-                this.controller_.removeObserver(this);
+                this.controller_.removeObserver(this, target);
             }
         };
         /**

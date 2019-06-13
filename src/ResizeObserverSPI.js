@@ -90,7 +90,7 @@ export default class ResizeObserverSPI {
 
         observations.set(target, new ResizeObservation(target));
 
-        this.controller_.addObserver(this);
+        this.controller_.addObserver(this, target);
 
         // Force the update of observations.
         this.controller_.refresh();
@@ -126,7 +126,7 @@ export default class ResizeObserverSPI {
         observations.delete(target);
 
         if (!observations.size) {
-            this.controller_.removeObserver(this);
+            this.controller_.removeObserver(this, target);
         }
     }
 
